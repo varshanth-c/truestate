@@ -1,53 +1,112 @@
-// Build MongoDB query from request query params
-function buildQuery(q) {
+// backend/src/utils/buildQuery.js
+// Build MongoDB query from request query params (robust to CSV header field names)
+function toArr(v) {
+  if (v == null) return [];
+  if (Array.isArray(v)) return v.map(String).map(s => s.trim()).filter(Boolean);
+  return String(v).split(',').map(s => s.trim()).filter(Boolean);
+}
+
+function buildQuery(q = {}) {
   const query = {};
   const and = [];
 
-  // search (customerName, phoneNumber)
+  // search (customerName, phoneNumber, transactionId)
   if (q.search) {
-    const s = q.search.trim();
-    and.push({
-      $or: [
-        { customerName: { $regex: s, $options: 'i' } },
-        { phoneNumber: { $regex: s, $options: 'i' } }
-      ]
-    });
+    const s = String(q.search).trim();
+    if (s.length) {
+      and.push({
+        $or: [
+          { customerName: { $regex: s, $options: 'i' } },
+          { phoneNumber: { $regex: s, $options: 'i' } },
+          { transactionId: { $regex: s, $options: 'i' } }
+        ]
+      });
+    }
   }
 
+  // region (supports customerRegion OR "Customer Region")
   if (q.region) {
-    const arr = q.region.split(',').map(x => x.trim());
-    and.push({ customerRegion: { $in: arr } });
+    const arr = toArr(q.region);
+    if (arr.length) {
+      and.push({
+        $or: [
+          { customerRegion: { $in: arr } },
+          { 'Customer Region': { $in: arr } }
+        ]
+      });
+    }
   }
+
+  // gender (supports gender OR Gender)
   if (q.gender) {
-    and.push({ gender: { $in: q.gender.split(',').map(x=>x.trim()) } });
+    const arr = toArr(q.gender);
+    if (arr.length) {
+      and.push({
+        $or: [
+          { gender: { $in: arr } },
+          { Gender: { $in: arr } }
+        ]
+      });
+    }
   }
-  if (q.category) {
-    and.push({ productCategory: { $in: q.category.split(',').map(x=>x.trim()) } });
+
+  // category (frontend may send category or productCategory) — check both productCategory and "Product Category"
+  const catVal = q.category ?? q.productCategory;
+  if (catVal) {
+    const arr = toArr(catVal);
+    if (arr.length) {
+      and.push({
+        $or: [
+          { productCategory: { $in: arr } },
+          { 'Product Category': { $in: arr } }
+        ]
+      });
+    }
   }
+
+  // tags (CSV or array)
   if (q.tags) {
-    and.push({ tags: { $in: q.tags.split(',').map(x=>x.trim()) } });
+    const arr = Array.isArray(q.tags) ? q.tags.map(String).map(s=>s.trim()).filter(Boolean) : toArr(q.tags);
+    if (arr.length) and.push({ tags: { $in: arr } });
   }
+
+  // payment (checks paymentMethod and "Payment Method")
   if (q.payment) {
-    and.push({ paymentMethod: { $in: q.payment.split(',').map(x=>x.trim()) } });
+    const arr = toArr(q.payment);
+    if (arr.length) {
+      and.push({
+        $or: [
+          { paymentMethod: { $in: arr } },
+          { 'Payment Method': { $in: arr } }
+        ]
+      });
+    }
   }
-  // age range
-  if (q.ageMin || q.ageMax) {
+
+  // age range (ageMin, ageMax)
+  if (q.ageMin != null || q.ageMax != null) {
     const o = {};
-    if (q.ageMin) o.$gte = Number(q.ageMin);
-    if (q.ageMax) o.$lte = Number(q.ageMax);
-    and.push({ age: o });
+    if (q.ageMin != null && !Number.isNaN(Number(q.ageMin))) o.$gte = Number(q.ageMin);
+    if (q.ageMax != null && !Number.isNaN(Number(q.ageMax))) o.$lte = Number(q.ageMax);
+    // only push if has at least one bound
+    if (Object.keys(o).length) and.push({ age: o });
   }
-  // date range
+
+  // date range (dateFrom, dateTo) — include whole dateTo day
   if (q.dateFrom || q.dateTo) {
     const o = {};
-    if (q.dateFrom) o.$gte = new Date(q.dateFrom);
-    if (q.dateTo) {
-      // include whole day
-      const d = new Date(q.dateTo);
-      d.setHours(23,59,59,999);
-      o.$lte = d;
+    if (q.dateFrom) {
+      const d1 = new Date(q.dateFrom);
+      if (!Number.isNaN(d1.getTime())) o.$gte = d1;
     }
-    and.push({ date: o });
+    if (q.dateTo) {
+      const d2 = new Date(q.dateTo);
+      if (!Number.isNaN(d2.getTime())) {
+        d2.setHours(23,59,59,999);
+        o.$lte = d2;
+      }
+    }
+    if (Object.keys(o).length) and.push({ date: o });
   }
 
   if (and.length) query.$and = and;
